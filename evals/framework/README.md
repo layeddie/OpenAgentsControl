@@ -339,3 +339,33 @@ See [API.md](./API.md) for complete API documentation.
 ## License
 
 MIT
+
+---
+
+## Scripts
+
+Development and debugging scripts are organized in the `scripts/` directory:
+
+```
+scripts/
+├── debug/          # Session and event debugging
+├── test/           # Framework component tests
+├── utils/          # Utility scripts (batch runner, etc.)
+└── README.md       # Script documentation
+```
+
+See [scripts/README.md](scripts/README.md) for detailed usage.
+
+### Quick Examples
+
+```bash
+# Run tests in batches
+./scripts/utils/run-tests-batch.sh openagent 3 10
+
+# Debug a session
+node scripts/debug/inspect-session.mjs
+
+# Test framework component
+npx tsx scripts/test/test-timeline.ts
+```
+

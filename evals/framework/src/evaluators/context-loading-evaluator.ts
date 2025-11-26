@@ -102,32 +102,64 @@ export class ContextLoadingEvaluator extends BaseEvaluator {
     // Find context file reads
     const contextReads = this.findContextReads(readTools);
 
+    // For multi-turn sessions, check if ANY context was loaded at ANY point
+    // This is more lenient for complex conversations where context might be loaded
+    // in response to different prompts
+    const hasAnyContextLoaded = contextReads.length > 0;
+    
     // Check if context was loaded before first execution
     const firstExecution = executionTools[0];
-    const contextLoadedBeforeExecution = this.wasContextLoadedBefore(
+    const contextLoadedBeforeFirstExecution = this.wasContextLoadedBefore(
       contextReads,
       firstExecution.timestamp
     );
 
+    // For multi-turn: Check each execution that requires context
+    const executionsRequiringContext = executionTools.filter(tool => 
+      tool.data?.tool === 'write' || 
+      tool.data?.tool === 'edit' ||
+      tool.data?.tool === 'task'
+    );
+
+    let allExecutionsHaveContext = true;
+    const executionChecks: string[] = [];
+
+    for (const execution of executionsRequiringContext) {
+      const hasContextBefore = this.wasContextLoadedBefore(contextReads, execution.timestamp);
+      executionChecks.push(
+        `${execution.data?.tool} at ${new Date(execution.timestamp).toISOString()}: ${hasContextBefore ? '✓' : '✗'}`
+      );
+      if (!hasContextBefore) {
+        allExecutionsHaveContext = false;
+      }
+    }
+
     // Build check
     const check: ContextLoadingCheck = {
-      contextFileLoaded: contextLoadedBeforeExecution,
+      contextFileLoaded: hasAnyContextLoaded && allExecutionsHaveContext,
       contextFilePath: contextReads.length > 0 ? contextReads[0].filePath : undefined,
       loadTimestamp: contextReads.length > 0 ? contextReads[0].timestamp : undefined,
       executionTimestamp: firstExecution.timestamp,
       evidence: []
     };
 
-    if (contextLoadedBeforeExecution) {
+    if (hasAnyContextLoaded) {
       check.evidence.push(
-        `Context loaded: ${contextReads[0].filePath}`,
-        `Load time: ${new Date(contextReads[0].timestamp!).toISOString()}`,
-        `First execution: ${new Date(firstExecution.timestamp).toISOString()}`,
-        `Time gap: ${firstExecution.timestamp - contextReads[0].timestamp!}ms`
+        `Context files loaded: ${contextReads.length}`,
+        ...contextReads.map(r => `  - ${r.filePath} at ${new Date(r.timestamp).toISOString()}`),
+        ``,
+        `Execution checks (${executionsRequiringContext.length} total):`,
+        ...executionChecks
       );
+      
+      if (allExecutionsHaveContext) {
+        check.evidence.push(``, `✓ All executions have context loaded before them`);
+      } else {
+        check.evidence.push(``, `✗ Some executions missing context`);
+      }
     } else {
       check.evidence.push(
-        `No context files loaded before execution`,
+        `No context files loaded in session`,
         `First execution: ${new Date(firstExecution.timestamp).toISOString()}`,
         `Execution tool: ${firstExecution.data?.tool}`
       );
@@ -136,27 +168,43 @@ export class ContextLoadingEvaluator extends BaseEvaluator {
     // Add check result
     checks.push({
       name: 'context-loaded-before-execution',
-      passed: contextLoadedBeforeExecution,
+      passed: hasAnyContextLoaded && allExecutionsHaveContext,
       weight: 100,
       evidence: check.evidence.map(e =>
         this.createEvidence('context-check', e, {
           contextFiles: contextReads.map(r => r.filePath),
-          executionTool: firstExecution.data?.tool
+          executionTool: firstExecution.data?.tool,
+          totalExecutions: executionsRequiringContext.length,
+          executionsWithContext: executionChecks.filter(c => c.includes('✓')).length
         })
       )
     });
 
-    // Add violation if context not loaded
-    if (!contextLoadedBeforeExecution) {
+    // Add violation if context not loaded properly
+    if (!hasAnyContextLoaded) {
       violations.push(
         this.createViolation(
           'no-context-loaded',
           'warning',
-          'Task execution started without loading context files',
+          'Task execution started without loading any context files',
           firstExecution.timestamp,
           {
             executionTool: firstExecution.data?.tool,
             timestamp: firstExecution.timestamp,
+            contextFilesRead: 0
+          }
+        )
+      );
+    } else if (!allExecutionsHaveContext) {
+      violations.push(
+        this.createViolation(
+          'context-loaded-after-execution',
+          'warning',
+          'Some executions happened before context was loaded',
+          firstExecution.timestamp,
+          {
+            totalExecutions: executionsRequiringContext.length,
+            executionsWithContext: executionChecks.filter(c => c.includes('✓')).length,
             contextFilesRead: contextReads.length
           }
         )
@@ -194,8 +242,11 @@ export class ContextLoadingEvaluator extends BaseEvaluator {
       isTaskSession: true,
       executionToolCount: executionTools.length,
       contextFileCount: contextReads.length,
-      contextLoadedBeforeExecution,
-      contextCheck: check
+      contextLoadedBeforeExecution: hasAnyContextLoaded && allExecutionsHaveContext,
+      contextCheck: check,
+      multiTurn: executionsRequiringContext.length > 1,
+      executionsRequiringContext: executionsRequiringContext.length,
+      executionsWithContext: executionChecks.filter(c => c.includes('✓')).length
     });
   }
 
@@ -209,7 +260,13 @@ export class ContextLoadingEvaluator extends BaseEvaluator {
     const contextReads: Array<{ filePath: string; timestamp: number }> = [];
 
     for (const tool of readTools) {
-      const filePath = tool.data?.input?.filePath || tool.data?.input?.path;
+      // Try multiple possible locations for file path
+      const filePath = tool.data?.state?.input?.filePath || 
+                      tool.data?.state?.input?.path ||
+                      tool.data?.input?.filePath || 
+                      tool.data?.input?.path ||
+                      tool.data?.filePath ||
+                      tool.data?.path;
       
       if (filePath && this.isContextFile(filePath)) {
         contextReads.push({

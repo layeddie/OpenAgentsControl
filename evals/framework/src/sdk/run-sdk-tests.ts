@@ -24,6 +24,7 @@
 
 import { TestRunner } from './test-runner.js';
 import { loadTestCase, loadTestCases } from './test-case-loader.js';
+import { ResultSaver } from './result-saver.js';
 import { globSync } from 'glob';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -248,6 +249,25 @@ async function main() {
     
     // Clean up test_tmp directory after tests
     cleanupTestTmp(testTmpDir);
+    
+    // Save results to JSON
+    if (results.length > 0) {
+      const resultsDir = join(agentsDir, '..', 'results');
+      const resultSaver = new ResultSaver(resultsDir);
+      
+      // Determine agent from test cases (all tests should be for same agent)
+      const agent = testCases[0].agent || agentToTest || 'unknown';
+      const model = args.model || 'opencode/grok-code-fast';
+      
+      try {
+        const savedPath = await resultSaver.save(results, agent, model);
+        console.log(`\n📊 Results saved to: ${savedPath}`);
+        console.log(`📊 Latest results: ${join(resultsDir, 'latest.json')}`);
+        console.log(`📊 View dashboard: file://${join(resultsDir, 'index.html')}\n`);
+      } catch (error) {
+        console.warn(`\n⚠️  Failed to save results: ${(error as Error).message}\n`);
+      }
+    }
     
     // Print results
     printResults(results);
